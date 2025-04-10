@@ -1,13 +1,12 @@
-import express from 'express';
-import pkg from 'pg';
-const { Pool } = pkg;
-import bodyParser from 'body-parser';
-import cors from 'cors';
-import rateLimit from 'express-rate-limit';
-import { v4 as uuidv4 } from 'uuid';
-import dotenv from 'dotenv';
+const express = require('express');
+const { Pool } = require('pg');
+const bodyParser = require('body-parser');
+const cors = require('cors');
+const rateLimit = require('express-rate-limit');
+const { v4: uuidv4 } = require('uuid');
 
-dotenv.config();
+// 讀取環境變數
+require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -110,6 +109,7 @@ const validateEstateData = (data) => {
 
 // 中介層：API_KEY驗證
 app.use(async (req, res, next) => {
+  // 健康檢查和API文檔端點不需要驗證
   if (req.path === '/health' || req.path === '/api-docs') {
     return next();
   }
@@ -129,6 +129,7 @@ app.use(async (req, res, next) => {
       return res.status(403).json({ message: 'API_KEY無效或已過期' });
     }
     
+    // 更新最後使用時間
     await pool.query(
       'UPDATE api_keys SET last_used_at = NOW() WHERE key = $1',
       [apiKey]
@@ -151,6 +152,7 @@ app.get('/estates', async (req, res) => {
     let paramIndex = 1;
     let query = 'SELECT * FROM real_estate_data';
     
+    // 建立WHERE子句
     const conditions = [];
     
     if (city) {
@@ -182,10 +184,12 @@ app.get('/estates', async (req, res) => {
       query += ' WHERE ' + conditions.join(' AND ');
     }
     
+    // 計算總筆數
     const countQuery = query.replace('SELECT *', 'SELECT COUNT(*)');
     const countResult = await pool.query(countQuery, params);
     const totalCount = parseInt(countResult.rows[0].count);
     
+    // 添加排序和分頁
     query += ' ORDER BY transaction_date DESC LIMIT $' + paramIndex++ + ' OFFSET $' + paramIndex++;
     params.push(limit);
     params.push(offset);
@@ -213,6 +217,7 @@ app.get('/estates', async (req, res) => {
 // 根據ID取得房地產資料
 app.get('/estates/:id', async (req, res) => {
   try {
+    // 驗證UUID格式
     const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     if (!uuidPattern.test(req.params.id)) {
       return res.status(400).json({ message: '無效的ID格式' });
@@ -224,12 +229,188 @@ app.get('/estates/:id', async (req, res) => {
     }
     res.json(result.rows[0]);
   } catch (err) {
-    console.error('查詢錯誤:', err);
+    console.error('查詢錯誤:', err, {
+      id: req.params.id,
+      timestamp: new Date().toISOString()
+    });
     res.status(500).json({ message: '伺服器錯誤', error: err.message });
   }
 });
 
-// 啟動伺服器
-app.listen(port, () => {
-  console.log(`伺服器啟動於 http://localhost:${port}`);
+// 新增房地產資料
+app.post('/estates', async (req, res) => {
+  try {
+    const e = req.body;
+    
+    // 驗證資料
+    const validationErrors = validateEstateData(e);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ message: '資料驗證失敗', errors: validationErrors });
+    }
+    
+    // 如果沒有提供transaction_id，自動生成
+    if (!e.transaction_id) {
+      e.transaction_id = uuidv4();
+    }
+    
+    await pool.query(
+      `INSERT INTO real_estate_data (
+        transaction_id, transaction_date, city, district, address, building_type, price, building_area, unit_price, floor_level, building_age, total_floors, land_area, main_use, construction_materials, transaction_type
+      ) VALUES (
+        $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16
+      )`,
+      [
+        e.transaction_id, e.transaction_date, e.city, e.district, e.address, e.building_type, e.price, e.building_area, e.unit_price, e.floor_level, e.building_age, e.total_floors, e.land_area, e.main_use, e.construction_materials, e.transaction_type
+      ]
+    );
+    
+    res.status(201).json({ 
+      message: '新增成功',
+      transaction_id: e.transaction_id
+    });
+  } catch (err) {
+    console.error('新增錯誤:', err, {
+      body: req.body,
+      timestamp: new Date().toISOString()
+    });
+    
+    // 處理重複鍵錯誤
+    if (err.code === '23505') { // 唯一約束違反
+      return res.status(409).json({ message: '資料已存在', error: err.detail });
+    }
+    
+    res.status(500).json({ message: '伺服器錯誤', error: err.message });
+  }
 });
+
+// 更新房地產資料
+app.put('/estates/:id', async (req, res) => {
+  try {
+    // 驗證UUID格式
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidPattern.test(req.params.id)) {
+      return res.status(400).json({ message: '無效的ID格式' });
+    }
+    
+    const e = req.body;
+    
+    // 驗證資料
+    const validationErrors = validateEstateData(e);
+    if (validationErrors.length > 0) {
+      return res.status(400).json({ message: '資料驗證失敗', errors: validationErrors });
+    }
+    
+    // 檢查資料是否存在
+    const checkResult = await pool.query(
+      'SELECT * FROM real_estate_data WHERE transaction_id = $1',
+      [req.params.id]
+    );
+    
+    if (checkResult.rowCount === 0) {
+      return res.status(404).json({ message: '找不到要更新的資料' });
+    }
+    
+    const result = await pool.query(
+      `UPDATE real_estate_data SET
+        transaction_date=$2, city=$3, district=$4, address=$5, building_type=$6, price=$7, building_area=$8, unit_price=$9, floor_level=$10, building_age=$11, total_floors=$12, land_area=$13, main_use=$14, construction_materials=$15, transaction_type=$16
+      WHERE transaction_id=$1`,
+      [
+        req.params.id, e.transaction_date, e.city, e.district, e.address, e.building_type, e.price, e.building_area, e.unit_price, e.floor_level, e.building_age, e.total_floors, e.land_area, e.main_use, e.construction_materials, e.transaction_type
+      ]
+    );
+    
+    res.json({ 
+      message: '更新成功',
+      transaction_id: req.params.id,
+      affected_rows: result.rowCount
+    });
+  } catch (err) {
+    console.error('更新錯誤:', err, {
+      id: req.params.id,
+      body: req.body,
+      timestamp: new Date().toISOString()
+    });
+    res.status(500).json({ message: '伺服器錯誤', error: err.message });
+  }
+});
+
+// 刪除房地產資料
+app.delete('/estates/:id', async (req, res) => {
+  try {
+    // 驗證UUID格式
+    const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidPattern.test(req.params.id)) {
+      return res.status(400).json({ message: '無效的ID格式' });
+    }
+    
+    // 檢查資料是否存在
+    const checkResult = await pool.query(
+      'SELECT * FROM real_estate_data WHERE transaction_id = $1',
+      [req.params.id]
+    );
+    
+    if (checkResult.rowCount === 0) {
+      return res.status(404).json({ message: '找不到要刪除的資料' });
+    }
+    
+    const result = await pool.query(
+      'DELETE FROM real_estate_data WHERE transaction_id = $1',
+      [req.params.id]
+    );
+    
+    res.json({ 
+      message: '刪除成功',
+      transaction_id: req.params.id,
+      affected_rows: result.rowCount
+    });
+  } catch (err) {
+    console.error('刪除錯誤:', err, {
+      id: req.params.id,
+      timestamp: new Date().toISOString()
+    });
+    res.status(500).json({ message: '伺服器錯誤', error: err.message });
+  }
+});
+
+// 全局錯誤處理中介層
+app.use((err, req, res, next) => {
+  console.error('未處理的錯誤:', err.stack);
+  res.status(500).json({
+    message: '伺服器內部錯誤',
+    error: err.message
+  });
+});
+
+// 處理未捕獲的異常
+process.on('uncaughtException', (err) => {
+  console.error('未捕獲的異常:', err);
+  // 在生產環境中，可能需要通知管理員或重啟服務
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('未處理的Promise拒絕:', reason);
+});
+
+// 處理進程退出
+process.on('exit', (code) => {
+  console.error(`進程退出，退出碼: ${code}`);
+});
+
+// 保持進程運行
+setInterval(() => {
+  console.log('伺服器仍在運行中...');
+}, 10000);
+
+try {
+  console.log(`嘗試在端口 ${port} 上啟動伺服器...`);
+  const server = app.listen(port, () => {
+    console.log(`MCP伺服器運行於 http://localhost:${port}`);
+    console.log(`伺服器詳細信息:`, server.address());
+  });
+  
+  server.on('error', (err) => {
+    console.error(`伺服器啟動錯誤:`, err);
+  });
+} catch (err) {
+  console.error(`啟動伺服器時發生錯誤:`, err);
+}

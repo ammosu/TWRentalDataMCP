@@ -40,31 +40,6 @@ node build/index.js
 
 ```bash
 npm start
-```
-
----
-
-## Git 操作流程
-
-首次推送：
-
-```bash
-git init
-git remote add origin git@github.com:ammosu/TWRentalDataMCP.git
-git add .
-git commit -m "Initial commit"
-git branch -M main
-git push -u origin main
-```
-
----
-
-## 注意事項
-
-- `.env` 內含敏感資訊，**請勿推送**。
-- 測試資料與範例檔案已刪除，保持專案乾淨。
-- 子專案內有更詳細的說明，請參考 `rental-data-mcp-server/README.md`。
-
 ---
 
 ## 授權

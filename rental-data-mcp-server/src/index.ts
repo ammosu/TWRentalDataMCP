@@ -49,6 +49,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: {
           type: "object",
           properties: {
+            user_api_key: {
+              type: "string",
+              description: "用戶的API金鑰，將用於主API伺服器授權"
+            },
             city: {
               type: "string",
               description: "城市名稱，例如：台北市、新北市"
@@ -63,7 +67,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
               description: "頁碼，從1開始，預設為1",
               default: 1
             }
-          }
+          },
         }
       }
     ]
@@ -78,6 +82,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (request.params.name !== "query_estates") {
     throw new Error("Unknown tool");
   }
+
+  const args = request.params.arguments || {};
+
+  const { user_api_key, ...queryParams } = args;
 
   try {
     // Check if the main API server is running
@@ -96,11 +104,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     // Query the API
+    const headers: Record<string, string> = {};
+
+    let apiKeyToUse: string | undefined = undefined;
+    if (typeof user_api_key === "string" && user_api_key.trim() !== "") {
+      apiKeyToUse = user_api_key;
+    } else if (API_KEY) {
+      apiKeyToUse = API_KEY;
+    }
+
+    if (apiKeyToUse) {
+      headers["X-API-KEY"] = apiKeyToUse;
+    }
+
     const response = await axios.get(`${API_URL}/estates`, {
-      headers: {
-        "X-API-KEY": API_KEY
-      },
-      params: request.params.arguments || {}
+      headers,
+      params: queryParams
     });
 
     return {
