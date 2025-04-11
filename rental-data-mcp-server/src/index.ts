@@ -18,7 +18,7 @@ import * as dotenv from "dotenv";
 dotenv.config();
 
 // API configuration
-const API_KEY = process.env.MCP_API_KEY || "test-api-key-123456";
+const API_KEY = process.env.RENTAL_DATA_API_KEY || "test-api-key-123456";
 const API_URL = `http://localhost:${process.env.PORT || 3001}`;
 
 /**
